@@ -25,6 +25,7 @@ on:
           - mksu
           - ksu
           - lkm
+          - wildksu
         default: 'default'
       do_release:
         description: 'Create Release'
