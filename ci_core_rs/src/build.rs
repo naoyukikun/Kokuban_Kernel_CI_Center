@@ -162,6 +162,15 @@ pub fn handle_build(project_key: String, branch: String, do_release: bool) -> Re
         run_cmd(&["curl", "-L", "-o", "manual-hook.patch", hook_url], Some(&kernel_source_path), false)?;
         run_cmd(&["bash", "-c", "patch -p1 --fuzz=3 < manual-hook.patch"], Some(&kernel_source_path), false)?;
 
+        // F. Fix Compilation Error in fs/namespace.c
+        // The patch introduces 'copy_flags' but the Samsung kernel uses 'flags'.
+        println!("   - Fixing fs/namespace.c compilation error...");
+        run_cmd(
+            &["sed", "-i", "s/copy_flags |= CL_COPY_MNT_NS/flags |= CL_COPY_MNT_NS/g", "fs/namespace.c"],
+            Some(&kernel_source_path),
+            false,
+        )?;
+
         // E. Adjust Configs (Disable Kprobes, Disable SUS_SU)
         // We write to a temporary config fragment or append to defconfig
         // Since we run 'make defconfig' later, we should append to the arch defconfig OR
