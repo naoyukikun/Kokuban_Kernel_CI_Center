@@ -163,10 +163,10 @@ pub fn handle_build(project_key: String, branch: String, do_release: bool) -> Re
         run_cmd(&["bash", "-c", "patch -p1 --fuzz=3 < manual-hook.patch"], Some(&kernel_source_path), false)?;
 
         // E. Fix Compilation Error in fs/namespace.c
-        // The patch introduces 'copy_flags' but the Samsung kernel uses 'flags'.
-        println!("   - Fixing fs/namespace.c compilation error...");
+        // REPLACE THE OLD SED COMMAND WITH THIS ONE:
+        println!("   - Fixing fs/namespace.c compilation error (Aggressive)...");
         run_cmd(
-            &["sed", "-i", "s/copy_flags |= CL_COPY_MNT_NS/flags |= CL_COPY_MNT_NS/g", "fs/namespace.c"],
+            &["sed", "-i", "s/copy_flags/flags/g", "fs/namespace.c"],
             Some(&kernel_source_path),
             false,
         )?;
