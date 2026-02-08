@@ -117,31 +117,93 @@ pub fn handle_build(project_key: String, branch: String, do_release: bool) -> Re
         );
     }
 
-    // 3. KernelSU Integration
-    let setup_url = match branch.as_str() {
-        "resukisu" => Some((
-            "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh",
-            "builtin",
-        )),
-        "mksu" => Some((
-            "https://raw.githubusercontent.com/5ec1cff/KernelSU/main/kernel/setup.sh",
-            "-",
-        )),
-        "ksu" => Some((
-            "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh",
-            "-",
-        )),
-        _ => None,
-    };
+    // ---------------------------------------------------------------------
+    // 3. KernelSU Integration (MODIFIED FOR WILDKSU)
+    // ---------------------------------------------------------------------
+    if branch == "wildksu" {
+        println!("Starting WildKSU + SUSFS + Manual Hook Integration");
 
-    if let Some((url, arg)) = setup_url {
-        println!("Installing KernelSU for {}", branch);
-        let cmd = format!("curl -LSs '{}' | bash -s {}", url, arg);
-        run_cmd(&["bash", "-c", &cmd], Some(&kernel_source_path), false)?;
+        // A. Install WildKSU
+        // Note: Using 'main' as argument per your script logic (bash -s wild)
+        // Adjust the setup script URL if needed (using WildKernels URL from your snippet)
+        let wild_setup = "curl -LSs 'https://raw.githubusercontent.com/WildKernels/Wild_KSU/wild/kernel/setup.sh' | bash -s wild";
+        run_cmd(&["bash", "-c", wild_setup], Some(&kernel_source_path), false)?;
+
+        // B. Clone SUSFS (Using shallow clone depth=1)
+        println!("   - Cloning SUSFS...");
+        let susfs_url = "https://gitlab.com/simonpunk/susfs4ksu.git";
+        let susfs_branch = "gki-android13-5.15"; // You can make this dynamic if needed
+        run_cmd(
+            &["git", "clone", "-b", susfs_branch, "--depth=1", susfs_url, "susfs4ksu"],
+            Some(&kernel_source_path),
+            false,
+        )?;
+
+        // C. Apply SUSFS Patches
+        println!("   - Applying SUSFS patches...");
+        
+        // Copy patch files
+        let cp_patch_cmd = format!("cp susfs4ksu/kernel_patches/50_add_susfs_in_{}.patch .", susfs_branch);
+        run_cmd(&["bash", "-c", &cp_patch_cmd], Some(&kernel_source_path), false)?;
+        
+        // Copy fs files
+        run_cmd(&["bash", "-c", "cp -rv susfs4ksu/kernel_patches/fs/* fs/"], Some(&kernel_source_path), false)?;
+        
+        // Copy include files
+        run_cmd(&["bash", "-c", "cp -rv susfs4ksu/kernel_patches/include/linux/* include/linux/"], Some(&kernel_source_path), false)?;
+
+        // Apply the main patch
+        let patch_cmd = format!("patch -p1 --fuzz=3 < 50_add_susfs_in_{}.patch", susfs_branch);
+        run_cmd(&["bash", "-c", &patch_cmd], Some(&kernel_source_path), false)?;
+
+        // D. Apply Manual Hook 1.6
+        println!("   - Applying Manual Hook v1.6...");
+        let hook_url = "https://github.com/SukiSU-Ultra/SukiSU_patch/raw/83aa64b7548890bb1f2eff6c990c03a1802df27b/hooks/scope_min_manual_hooks_v1.6.patch";
+        run_cmd(&["curl", "-L", "-o", "manual-hook.patch", hook_url], Some(&kernel_source_path), false)?;
+        run_cmd(&["bash", "-c", "patch -p1 --fuzz=3 < manual-hook.patch"], Some(&kernel_source_path), false)?;
+
+        // E. Adjust Configs (Disable Kprobes, Disable SUS_SU)
+        // We write to a temporary config fragment or append to defconfig
+        // Since we run 'make defconfig' later, we should append to the arch defconfig OR
+        // handle it in the .config step later. Here we append to defconfig as requested.
+        let defconfig_path = kernel_source_path.join(format!("arch/arm64/configs/{}", proj.defconfig));
+        
+        // Check if defconfig exists before appending
+        if defconfig_path.exists() {
+             let mut file = fs::OpenOptions::new().append(true).open(&defconfig_path)?;
+             use std::io::Write;
+             writeln!(file, "CONFIG_KSU_KPROBES_HOOK=n")?;
+             writeln!(file, "CONFIG_KSU_SUSFS_SUS_SU=n")?;
+        } else {
+            println!("⚠️ Warning: Defconfig not found at {:?}, skipping config append.", defconfig_path);
+        }
+
+    } else {
+        // Standard Logic for other variants
+        let setup_url = match branch.as_str() {
+            "resukisu" => Some((
+                "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh",
+                "builtin",
+            )),
+            "mksu" => Some((
+                "https://raw.githubusercontent.com/5ec1cff/KernelSU/main/kernel/setup.sh",
+                "-",
+            )),
+            "ksu" => Some((
+                "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh",
+                "-",
+            )),
+            _ => None,
+        };
+
+        if let Some((url, arg)) = setup_url {
+            println!("Installing KernelSU for {}", branch);
+            let cmd = format!("curl -LSs '{}' | bash -s {}", url, arg);
+            run_cmd(&["bash", "-c", &cmd], Some(&kernel_source_path), false)?;
+        }
     }
 
-    // 4. Retrieve Kernel Version (NEW)
-    // 我们在这个阶段运行 make kernelversion 来获取版本号，此时环境已经配置好
+    // 4. Retrieve Kernel Version
     println!("Extracting kernel version...");
     let kernel_version = run_cmd(&["make", "kernelversion"], Some(&kernel_source_path), true)?
         .unwrap_or_else(|| "unknown".to_string())
@@ -190,6 +252,24 @@ pub fn handle_build(project_key: String, branch: String, do_release: bool) -> Re
         for d in disables {
             disable_configs.push(d);
         }
+    }
+
+    // For WildKSU Manual Hook, ensure we enable Manual Hook config in the final .config
+    if branch == "wildksu" {
+         disable_configs.push("KSU_KPROBES_HOOK"); // Ensure KPROBES is off
+         disable_configs.push("KSU_SUSFS_SUS_SU"); // Ensure SUS_SU is off
+         
+         // We must ENABLE Manual Hook. The loop below disables, so we do enable separately.
+         run_cmd(
+            &["scripts/config", "--file", "out/.config", "-e", "CONFIG_KSU_MANUAL_HOOK"],
+            Some(&kernel_source_path),
+            false,
+        )?;
+        run_cmd(
+            &["scripts/config", "--file", "out/.config", "-e", "CONFIG_SUSFS"],
+            Some(&kernel_source_path),
+            false,
+        )?;
     }
 
     for config in disable_configs {
@@ -251,6 +331,7 @@ pub fn handle_build(project_key: String, branch: String, do_release: bool) -> Re
         "ksu" => "KSU".to_string(),
         "mksu" => "MKSU".to_string(),
         "resukisu" | "sukisuultra" => "ReSuki".to_string(),
+        "wildksu" => "WildKSU".to_string(), // Added label for filename
         _ => branch.to_uppercase(),
     };
 
@@ -306,7 +387,6 @@ pub fn handle_build(project_key: String, branch: String, do_release: bool) -> Re
     let date_str = Local::now().format("%Y%m%d-%H%M").to_string();
     let zip_prefix = proj.zip_name_prefix.as_deref().unwrap_or("Kernel");
 
-    // 修改这里：使用 [Prefix]-[KernelVersion]-[LocalVersion]-[Date].zip
     let clean_localversion = localversion.trim_start_matches('-');
     let final_zip_name = format!(
         "{}-{}-{}-{}.zip",
