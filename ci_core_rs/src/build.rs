@@ -163,11 +163,34 @@ pub fn handle_build(project_key: String, branch: String, do_release: bool) -> Re
         run_cmd(&["bash", "-c", "patch -p1 --fuzz=3 < manual-hook.patch"], Some(&kernel_source_path), false)?;
 
         // E. Fix Compilation Error in fs/namespace.c
-        // PRECISE FIX: Revert the aggressive change. 
-        // The patch uses 'copy_flags' but the function argument is named 'unshare_flags'.
-        println!("   - Fixing fs/namespace.c variable mismatch...");
+        // PROBLEM: The patch applied to a wrong function (approx line 3808) where variables are missing.
+        // SOLUTION: Remove the bad lines and inject the logic into 'copy_mnt_ns' where 'copy_flags' exists.
+        println!("   - Relocating Manual Hook to correct function...");
+
+        // 1. Delete the misplaced 'if (flags & CLONE_NEWNS)' line
         run_cmd(
-            &["sed", "-i", "s/copy_flags |= CL_COPY_MNT_NS/unshare_flags |= CL_COPY_MNT_NS/g", "fs/namespace.c"],
+            &["sed", "-i", "/if (flags & CLONE_NEWNS)/d", "fs/namespace.c"],
+            Some(&kernel_source_path),
+            false,
+        )?;
+
+        // 2. Delete the misplaced 'copy_flags |= ...' line
+        run_cmd(
+            &["sed", "-i", "/copy_flags |= CL_COPY_MNT_NS/d", "fs/namespace.c"],
+            Some(&kernel_source_path),
+            false,
+        )?;
+
+        // 3. Inject the logic into the CORRECT place (inside copy_mnt_ns)
+        // We match a unique line known to be in copy_mnt_ns and append our logic using '&' (which means 'matched string').
+        // We use \\& to escape the ampersand for sed.
+        run_cmd(
+            &[
+                "sed", 
+                "-i", 
+                "s/copy_flags = CL_COPY_UNBINDABLE | CL_EXPIRE;/& if (flags \\& CLONE_NEWNS) copy_flags |= CL_COPY_MNT_NS;/", 
+                "fs/namespace.c"
+            ],
             Some(&kernel_source_path),
             false,
         )?;
