@@ -163,10 +163,11 @@ pub fn handle_build(project_key: String, branch: String, do_release: bool) -> Re
         run_cmd(&["bash", "-c", "patch -p1 --fuzz=3 < manual-hook.patch"], Some(&kernel_source_path), false)?;
 
         // E. Fix Compilation Error in fs/namespace.c
-        // REPLACE THE OLD SED COMMAND WITH THIS ONE:
-        println!("   - Fixing fs/namespace.c compilation error (Aggressive)...");
+        // PRECISE FIX: Revert the aggressive change. 
+        // The patch uses 'copy_flags' but the function argument is named 'unshare_flags'.
+        println!("   - Fixing fs/namespace.c variable mismatch...");
         run_cmd(
-            &["sed", "-i", "s/copy_flags/flags/g", "fs/namespace.c"],
+            &["sed", "-i", "s/copy_flags |= CL_COPY_MNT_NS/unshare_flags |= CL_COPY_MNT_NS/g", "fs/namespace.c"],
             Some(&kernel_source_path),
             false,
         )?;
